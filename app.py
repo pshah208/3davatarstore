@@ -1,5 +1,5 @@
 import streamlit as st
-import requests
+import google.generativeai as genai
 import json
 import base64
 import io
@@ -128,7 +128,18 @@ st.markdown("""
 
 # Gemini API configuration
 GEMINI_API_KEY = "your-gemini-api-key-here"  # Replace with actual API key
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
+
+# Configure Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Available Gemini models for avatar creation
+AVAILABLE_MODELS = {
+    "gemini-2.0-flash-exp": "Gemini 2.0 Flash (Experimental) - Latest with best multimodal capabilities",
+    "gemini-2.5-flash": "Gemini 2.5 Flash - Fast and efficient for image analysis", 
+}
+
+# Default model for avatar creation
+DEFAULT_MODEL = "gemini-2.0-flash-exp"
 
 # Sample clothing catalog
 CLOTHING_CATALOG = {
@@ -170,37 +181,41 @@ class AIClothingStore:
             st.session_state.cart = []
         if 'avatar_measurements' not in st.session_state:
             st.session_state.avatar_measurements = {}
+        if 'selected_model' not in st.session_state:
+            st.session_state.selected_model = DEFAULT_MODEL
     
-    def call_gemini_api(self, prompt: str, image_data: str = None) -> Dict[Any, Any]:
-        """Make API call to Gemini"""
-        headers = {
-            'Content-Type': 'application/json',
-        }
-        
-        content_parts = [{"text": prompt}]
-        
-        if image_data:
-            content_parts.append({
-                "inline_data": {
-                    "mime_type": "image/jpeg",
-                    "data": image_data
-                }
-            })
-        
-        payload = {
-            "contents": [{
-                "parts": content_parts
-            }],
-            "generationConfig": {
-                "temperature": 0.7,
-                "topK": 40,
-                "topP": 0.95,
-                "maxOutputTokens": 1024,
-            }
-        }
-        
+    def call_gemini_api(self, prompt: str, image_data: Image.Image = None, model_name: str = None) -> Dict[Any, Any]:
+        """Make API call to Gemini using the official library"""
         try:
-            # Simulate API response for demo purposes
+            # Use selected model or default
+            model_to_use = model_name or st.session_state.get('selected_model', DEFAULT_MODEL)
+            
+            # Initialize the model
+            model = genai.GenerativeModel(model_to_use)
+            
+            if image_data:
+                # For image + text prompt
+                response = model.generate_content([prompt, image_data])
+            else:
+                # For text-only prompt
+                response = model.generate_content(prompt)
+            
+            return {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": response.text
+                        }]
+                    }
+                }],
+                "model_used": model_to_use
+            }
+            
+        except Exception as e:
+            st.error(f"Gemini API Error with model {model_to_use}: {str(e)}")
+            st.info("💡 **Note**: Gemini Nano runs on-device only. For cloud API, use Gemini Flash or Pro models.")
+            
+            # Fallback to demo response for development
             if image_data:
                 return {
                     "candidates": [{
@@ -208,97 +223,188 @@ class AIClothingStore:
                             "parts": [{
                                 "text": json.dumps({
                                     "avatar_created": True,
+                                    "analysis_confidence": "medium",
+                                    "visible_features": {
+                                        "clothing_style": "Casual contemporary style",
+                                        "colors_worn": "Neutral tones",
+                                        "overall_build": "Average build"
+                                    },
                                     "measurements": {
-                                        "height": "5'6\"",
-                                        "chest": "36\"",
-                                        "waist": "28\"",
-                                        "hips": "38\"",
-                                        "shoulder_width": "16\"",
-                                        "body_type": "Pear"
+                                        "height_category": "average",
+                                        "estimated_height": "5'5\" - 5'7\"",
+                                        "body_type": "Rectangle",
+                                        "build": "average"
                                     },
                                     "recommended_sizes": {
                                         "tops": "M",
                                         "bottoms": "M",
                                         "dresses": "M"
                                     },
-                                    "style_preferences": ["Casual", "Elegant", "Comfortable"],
-                                    "color_palette": ["Earth tones", "Pastels", "Neutrals"]
+                                    "style_preferences": ["Casual", "Versatile", "Modern"],
+                                    "color_palette": ["Neutrals", "Earth tones", "Pastels"],
+                                    "confidence_note": f"Demo mode - using fallback analysis (attempted model: {model_to_use})"
                                 })
                             }]
                         }
-                    }]
+                    }],
+                    "model_used": f"{model_to_use} (fallback)"
                 }
             else:
                 return {
                     "candidates": [{
                         "content": {
                             "parts": [{
-                                "text": "Fashion recommendation generated successfully."
+                                "text": "Fashion recommendation generated successfully in demo mode."
                             }]
                         }
-                    }]
+                    }],
+                    "model_used": f"{model_to_use} (fallback)"
                 }
-        except Exception as e:
-            st.error(f"API Error: {str(e)}")
-            return {"error": str(e)}
+        
     
     def generate_avatar_from_image(self, uploaded_file) -> Dict[str, Any]:
-        """Generate 3D avatar from uploaded image using Gemini"""
+        """Generate avatar profile from uploaded image using Gemini's image analysis capabilities"""
         try:
-            # Convert image to base64
+            # Convert image to PIL Image
             image = Image.open(uploaded_file)
             image = image.convert('RGB')
             
-            # Resize for API
-            image.thumbnail((512, 512))
+            # Resize for API efficiency
+            image.thumbnail((1024, 1024))  # Higher resolution for better analysis
             
-            # Convert to base64
-            buffered = io.BytesIO()
-            image.save(buffered, format="JPEG")
-            image_base64 = base64.b64encode(buffered.getvalue()).decode()
-            
-            # Prompt for avatar generation
+            # Enhanced prompt for realistic image analysis
             prompt = """
-            Analyze this person's photo and create a detailed 3D avatar profile. Please provide:
-            1. Estimated body measurements (height, chest, waist, hips, shoulder width)
-            2. Body type classification
-            3. Recommended clothing sizes for tops, bottoms, and dresses
-            4. Style preferences based on appearance
-            5. Suitable color palette recommendations
+            Please analyze this person's photo carefully and provide realistic estimates based on what you can observe. 
+            Focus on visible features and use your knowledge of human proportions to make educated guesses.
             
-            Return the response as a JSON object with the following structure:
+            Please analyze:
+            1. General body build/frame (petite, average, tall, athletic, etc.)
+            2. Approximate height category (short: under 5'4", average: 5'4"-5'8", tall: over 5'8")
+            3. Body shape/type (pear, apple, hourglass, rectangle, inverted triangle)
+            4. Clothing style visible in the photo
+            5. Colors the person is wearing
+            6. Overall aesthetic/style preference hints
+            
+            Based on your analysis, estimate appropriate clothing sizes and provide style recommendations.
+            
+            IMPORTANT: Return your response as a valid JSON object only, with this exact structure:
             {
                 "avatar_created": true,
+                "analysis_confidence": "medium/high/low",
+                "visible_features": {
+                    "clothing_style": "description of current outfit style",
+                    "colors_worn": "colors visible in the photo",
+                    "overall_build": "description of body build"
+                },
                 "measurements": {
-                    "height": "height estimate",
-                    "chest": "chest measurement",
-                    "waist": "waist measurement", 
-                    "hips": "hips measurement",
-                    "shoulder_width": "shoulder width",
-                    "body_type": "body type classification"
+                    "height_category": "short/average/tall",
+                    "estimated_height": "estimated height range",
+                    "body_type": "body shape classification",
+                    "build": "petite/average/athletic/curvy"
                 },
                 "recommended_sizes": {
-                    "tops": "size",
-                    "bottoms": "size", 
-                    "dresses": "size"
+                    "tops": "XS/S/M/L/XL",
+                    "bottoms": "XS/S/M/L/XL", 
+                    "dresses": "XS/S/M/L/XL"
                 },
                 "style_preferences": ["style1", "style2", "style3"],
-                "color_palette": ["color1", "color2", "color3"]
+                "color_palette": ["color_category1", "color_category2", "color_category3"],
+                "confidence_note": "explanation of analysis limitations"
             }
+            
+            DO NOT include any text outside of this JSON structure.
             """
             
-            response = self.call_gemini_api(prompt, image_base64)
+            response = self.call_gemini_api(prompt, image)
             
-            if "candidates" in response:
-                result_text = response["candidates"][0]["content"]["parts"][0]["text"]
-                avatar_data = json.loads(result_text)
-                return avatar_data
+            if "candidates" in response and len(response["candidates"]) > 0:
+                result_text = response["candidates"][0]["content"]["parts"][0]["text"].strip()
+                
+                # Clean up the response to extract JSON
+                try:
+                    # Remove markdown code blocks if present
+                    if result_text.startswith('```'):
+                        result_text = result_text.split('```')[1]
+                        if result_text.startswith('json'):
+                            result_text = result_text[4:]
+                    
+                    # Find JSON boundaries
+                    json_start = result_text.find('{')
+                    json_end = result_text.rfind('}') + 1
+                    
+                    if json_start != -1 and json_end > json_start:
+                        json_text = result_text[json_start:json_end]
+                        avatar_data = json.loads(json_text)
+                        
+                        # Validate required fields
+                        required_fields = ['avatar_created', 'measurements', 'recommended_sizes']
+                        if all(field in avatar_data for field in required_fields):
+                            return avatar_data
+                        else:
+                            raise ValueError("Missing required fields in API response")
+                    else:
+                        raise ValueError("No valid JSON found in response")
+                        
+                except (json.JSONDecodeError, ValueError) as e:
+                    st.warning(f"Could not parse AI response properly: {e}")
+                    st.info("Using intelligent fallback based on average measurements...")
+                    
+                    # Create a more realistic fallback based on common sizing
+                    avatar_data = {
+                        "avatar_created": True,
+                        "analysis_confidence": "low",
+                        "visible_features": {
+                            "clothing_style": "Unable to analyze clearly",
+                            "colors_worn": "Various colors",
+                            "overall_build": "Average build"
+                        },
+                        "measurements": {
+                            "height_category": "average",
+                            "estimated_height": "5'4\" - 5'8\"",
+                            "body_type": "Rectangle",
+                            "build": "average"
+                        },
+                        "recommended_sizes": {
+                            "tops": "M",
+                            "bottoms": "M",
+                            "dresses": "M"
+                        },
+                        "style_preferences": ["Casual", "Versatile", "Comfortable"],
+                        "color_palette": ["Neutrals", "Earth tones", "Classic colors"],
+                        "confidence_note": "Analysis based on general population averages due to image processing limitations"
+                    }
+                    return avatar_data
             else:
-                return {"error": "Failed to generate avatar"}
+                raise Exception("No response from AI model")
                 
         except Exception as e:
-            st.error(f"Error generating avatar: {str(e)}")
-            return {"error": str(e)}
+            st.error(f"Error in avatar generation: {str(e)}")
+            st.info("Creating avatar with default measurements...")
+            
+            # Fallback avatar data
+            return {
+                "avatar_created": True,
+                "analysis_confidence": "low",
+                "visible_features": {
+                    "clothing_style": "Unable to analyze",
+                    "colors_worn": "Unable to determine",
+                    "overall_build": "Average"
+                },
+                "measurements": {
+                    "height_category": "average",
+                    "estimated_height": "5'5\" - 5'7\"",
+                    "body_type": "Rectangle",
+                    "build": "average"
+                },
+                "recommended_sizes": {
+                    "tops": "M",
+                    "bottoms": "M",
+                    "dresses": "M"
+                },
+                "style_preferences": ["Universal", "Adaptable", "Classic"],
+                "color_palette": ["Neutrals", "Basics", "Versatile"],
+                "confidence_note": "Default avatar created due to analysis limitations"
+            }
     
     def get_virtual_try_on_recommendation(self, item: Dict, avatar_data: Dict) -> str:
         """Get AI recommendation for how an item would look on the avatar"""
@@ -338,13 +444,36 @@ class AIClothingStore:
     
     def render_avatar_section(self):
         """Render the avatar creation and management section"""
-        st.markdown("## 📸 Create Your 3D Avatar")
+        st.markdown("## 📸 Create Your AI Avatar")
+        
+        # Model selection
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.markdown("### 🤖 Choose AI Model")
+        with col2:
+            selected_model = st.selectbox(
+                "AI Model",
+                options=list(AVAILABLE_MODELS.keys()),
+                format_func=lambda x: x.split('-')[1].title() + " " + x.split('-')[2].title() if len(x.split('-')) > 2 else x,
+                key="model_selector",
+                help="Choose the Gemini model for avatar analysis"
+            )
+            st.session_state.selected_model = selected_model
+        
+        # Display model info
+        st.info(f"**Selected**: {AVAILABLE_MODELS[selected_model]}")
+        
+        # Important note about Gemini Nano
+        st.warning("""
+        📱 **About Gemini Nano**: Gemini Nano is designed for on-device processing (like Android phones) and is not available via cloud API. 
+        For server-based applications like this, use Gemini Flash or Pro models which offer excellent image analysis capabilities.
+        """)
         
         if not st.session_state.avatar_generated:
             st.markdown("""
             <div class='upload-area'>
                 <h3 style='color: #8b7355; margin-bottom: 10px;'>Upload Your Photo</h3>
-                <p style='color: #d4b5a0;'>Upload a clear photo of yourself to create your personalized 3D avatar</p>
+                <p style='color: #d4b5a0;'>Upload a clear photo of yourself for AI-powered avatar analysis</p>
             </div>
             """, unsafe_allow_html=True)
             
@@ -361,8 +490,10 @@ class AIClothingStore:
                     st.image(uploaded_file, caption="Your Photo", use_column_width=True)
                 
                 with col2:
-                    if st.button("🚀 Generate 3D Avatar", key="generate_avatar"):
-                        with st.spinner("Creating your 3D avatar... This may take a moment."):
+                    st.markdown(f"**Using Model**: {selected_model}")
+                    
+                    if st.button("🚀 Generate AI Avatar", key="generate_avatar"):
+                        with st.spinner(f"Creating your avatar using {selected_model}... This may take a moment."):
                             avatar_data = self.generate_avatar_from_image(uploaded_file)
                             
                             if "error" not in avatar_data:
@@ -387,29 +518,57 @@ class AIClothingStore:
             <div class='avatar-preview'>
                 <div style='text-align: center; padding: 40px; background: linear-gradient(135deg, #f8f6f1, #f5f2eb); border-radius: 10px;'>
                     <div style='font-size: 4rem; margin-bottom: 10px;'>🧍‍♀️</div>
-                    <h4 style='color: #8b7355; margin: 0;'>Your 3D Avatar</h4>
+                    <h4 style='color: #8b7355; margin: 0;'>Your AI Avatar</h4>
                     <p style='color: #d4b5a0; margin: 5px 0;'>Ready for virtual try-ons!</p>
                 </div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
-            measurements = st.session_state.avatar_data.get('measurements', {})
-            recommended_sizes = st.session_state.avatar_data.get('recommended_sizes', {})
+            avatar_data = st.session_state.avatar_data
+            measurements = avatar_data.get('measurements', {})
+            recommended_sizes = avatar_data.get('recommended_sizes', {})
+            confidence = avatar_data.get('analysis_confidence', 'medium')
+            
+            # Display confidence indicator
+            confidence_color = {'high': '#4CAF50', 'medium': '#FF9800', 'low': '#F44336'}
+            confidence_emoji = {'high': '🎯', 'medium': '⚡', 'low': '📊'}
             
             st.markdown(f"""
             <div class='avatar-stats'>
-                <h4 style='color: #8b7355; margin-top: 0;'>📏 Your Measurements</h4>
-                <p><strong>Height:</strong> {measurements.get('height', 'N/A')}</p>
+                <h4 style='color: #8b7355; margin-top: 0;'>📊 Avatar Analysis</h4>
+                <p><strong>Analysis Confidence:</strong> 
+                <span style='color: {confidence_color.get(confidence, '#666')};'>
+                {confidence_emoji.get(confidence, '📊')} {confidence.title()}
+                </span></p>
+                
+                <p><strong>Height Category:</strong> {measurements.get('height_category', 'N/A').title()}</p>
+                <p><strong>Estimated Height:</strong> {measurements.get('estimated_height', 'N/A')}</p>
                 <p><strong>Body Type:</strong> {measurements.get('body_type', 'N/A')}</p>
+                <p><strong>Build:</strong> {measurements.get('build', 'N/A').title()}</p>
+                
+                <hr style='border-color: #d4b5a0; opacity: 0.3; margin: 15px 0;'>
+                
                 <p><strong>Recommended Sizes:</strong></p>
-                <ul>
+                <ul style='margin-left: 15px;'>
                     <li>Tops: {recommended_sizes.get('tops', 'N/A')}</li>
                     <li>Bottoms: {recommended_sizes.get('bottoms', 'N/A')}</li>
                     <li>Dresses: {recommended_sizes.get('dresses', 'N/A')}</li>
                 </ul>
             </div>
             """, unsafe_allow_html=True)
+            
+            # Show analysis details if available
+            visible_features = avatar_data.get('visible_features', {})
+            if visible_features:
+                with st.expander("🔍 Analysis Details"):
+                    st.write(f"**Clothing Style Observed:** {visible_features.get('clothing_style', 'N/A')}")
+                    st.write(f"**Colors in Photo:** {visible_features.get('colors_worn', 'N/A')}")
+                    st.write(f"**Overall Build:** {visible_features.get('overall_build', 'N/A')}")
+                    
+                    confidence_note = avatar_data.get('confidence_note', '')
+                    if confidence_note:
+                        st.info(f"**Note:** {confidence_note}")
         
         if st.button("🔄 Create New Avatar", key="new_avatar"):
             st.session_state.avatar_generated = False
@@ -467,7 +626,7 @@ class AIClothingStore:
                 if st.button(f"👗 Virtual Try-On", key=f"tryon_{item['id']}"):
                     self.show_virtual_try_on(item)
             else:
-                st.button("👗 Try-On (Create Avatar First)", disabled=True)
+                st.button("👗 Try-On (Create Avatar First)", disabled=True, key=f"disabled_tryon_{item['id']}")
     
     def show_virtual_try_on(self, item: Dict):
         """Display virtual try-on results"""
@@ -534,18 +693,25 @@ class AIClothingStore:
             # Avatar info in sidebar
             if st.session_state.avatar_generated:
                 st.markdown("### 👤 Your Avatar")
-                measurements = st.session_state.avatar_data.get('measurements', {})
-                st.markdown(f"**Body Type:** {measurements.get('body_type', 'N/A')}")
-                st.markdown(f"**Height:** {measurements.get('height', 'N/A')}")
+                avatar_data = st.session_state.avatar_data
+                measurements = avatar_data.get('measurements', {})
+                confidence = avatar_data.get('analysis_confidence', 'medium')
                 
-                style_prefs = st.session_state.avatar_data.get('style_preferences', [])
+                # Confidence indicator
+                confidence_colors = {'high': '🟢', 'medium': '🟡', 'low': '🔴'}
+                st.markdown(f"**Analysis:** {confidence_colors.get(confidence, '⚪')} {confidence.title()}")
+                st.markdown(f"**Body Type:** {measurements.get('body_type', 'N/A')}")
+                st.markdown(f"**Height:** {measurements.get('estimated_height', 'N/A')}")
+                st.markdown(f"**Build:** {measurements.get('build', 'N/A').title()}")
+                
+                style_prefs = avatar_data.get('style_preferences', [])
                 if style_prefs:
                     st.markdown("**Style Preferences:**")
                     for pref in style_prefs:
                         st.markdown(f"• {pref}")
             else:
                 st.markdown("### 👤 Create Your Avatar")
-                st.markdown("Upload a photo to get started with personalized recommendations!")
+                st.markdown("Upload a photo to get AI-powered size recommendations and style analysis!")
     
     def run(self):
         """Main application runner"""
